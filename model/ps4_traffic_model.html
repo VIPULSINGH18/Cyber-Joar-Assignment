@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>FlowSight — Hybrid Traffic Intelligence Model</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@300;400;500&display=swap" rel="stylesheet"/>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<style>
+  :root {
+    --bg: #06080f;
+    --s1: #0d1117;
+    --s2: #131920;
+    --s3: #1a2130;
+    --bd: #1e2d40;
+    --text: #dce8f5;
+    --muted: #5a7a96;
+    --a1: #00d4ff;   /* cyan - flow */
+    --a2: #ff6b35;   /* orange - congestion */
+    --a3: #7fff6a;   /* green - free flow */
+    --a4: #ffd166;   /* yellow - moderate */
+    --a5: #ef233c;   /* red - standstill */
+    --a6: #b06dff;   /* purple - prediction */
+  }
+  *, *::before, *::after { box-sizing:border-box; margin:0; padding:0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: 'Space Grotesk', sans-serif;
+    min-height: 100vh; overflow-x: hidden;
+  }
+  body::after {
+    content:''; position:fixed; inset:0;
+    background: radial-gradient(ellipse 80% 50% at 50% -10%, rgba(0,212,255,0.04), transparent);
+    pointer-events:none; z-index:0;
+  }
+
+  /* TOP BAR */
+  .topbar {
+    height:56px; background: rgba(6,8,15,0.95);
+    backdrop-filter:blur(20px);
+    border-bottom:1px solid var(--bd);
+    display:flex; align-items:center; justify-content:space-between;
+    padding:0 28px; position:sticky; top:0; z-index:200;
+  }
+  .brand {
+    font-weight:700; font-size:16px; letter-spacing:-0.3px;
+    display:flex; align-items:center; gap:10px;
+  }
+  .brand-icon {
+    width:30px; height:30px; border-radius:8px;
+    background:linear-gradient(135deg, var(--a1), var(--a6));
+    display:flex; align-items:center; justify-content:center;
+    font-size:14px;
+  }
+  .topbar-right { display:flex; align-items:center; gap:16px; }
+  .alert-badge {
+    display:flex; align-items:center; gap:6px;
+    padding:5px 12px; border-radius:20px;
+    font-size:11px; font-family:'JetBrains Mono',monospace;
+    background:rgba(239,35,60,0.15); color:var(--a5);
+    border:1px solid rgba(239,35,60,0.3);
+    animation: alertPulse 2s infinite;
+  }
+  @keyframes alertPulse { 0%,100%{opacity:1} 50%{opacity:0.6} }
+  .sys-time { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); }
+
+  /* LAYOUT */
+  .app { display:grid; grid-template-columns:260px 1fr 280px; min-height:calc(100vh - 56px); }
+
+  /* LEFT PANEL */
+  .left-panel {
+    background:var(--s1); border-right:1px solid var(--bd);
+    padding:20px 16px; display:flex; flex-direction:column; gap:20px;
+    position:relative; z-index:1; overflow-y:auto;
+  }
+  .panel-title {
+    font-family:'JetBrains Mono',monospace;
+    font-size:9px; font-weight:500;
+    color:var(--muted); letter-spacing:2.5px; text-transform:uppercase;
+    margin-bottom:10px;
+  }
+  .corridor-list { display:flex; flex-direction:column; gap:6px; }
+  .corridor-item {
+    padding:10px 12px; border-radius:8px;
+    background:var(--s2); border:1px solid var(--bd);
+    cursor:pointer; transition:all 0.2s;
+    display:flex; align-items:center; justify-content:space-between;
+  }
+  .corridor-item:hover, .corridor-item.active {
+    border-color:var(--a1); background:rgba(0,212,255,0.05);
+  }
+  .corridor-name { font-size:12px; font-weight:500; }
+  .corridor-sub { font-size:10px; color:var(--muted); margin-top:2px; }
+  .level-dot {
+    width:8px; height:8px; border-radius:50%;
+    flex-shrink:0; box-shadow:0 0 6px currentColor;
+  }
+  .l1 { background:var(--a3); color:var(--a3); }
+  .l2 { background:#aaff00; color:#aaff00; }
+  .l3 { background:var(--a4); color:var(--a4); }
+  .l4 { background:var(--a2); color:var(--a2); }
+  .l5 { background:var(--a5); color:var(--a5); animation:alertPulse 1.5s infinite; }
+
+  .model-card {
+    background:var(--s2); border:1px solid var(--bd); border-radius:10px;
+    padding:14px;
+  }
+  .model-row { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; font-size:12px; }
+  .model-row:last-child { margin-bottom:0; }
+  .model-val { font-family:'JetBrains Mono',monospace; font-size:12px; font-weight:500; }
+
+  .mini-gauge { position:relative; width:100%; height:6px; background:var(--s3); border-radius:3px; margin-top:4px; }
+  .mini-fill { height:100%; border-radius:3px; transition:width 1s ease; }
+
+  /* CENTER - MAP */
+  .center { position:relative; overflow:hidden; background:var(--s1); z-index:1; }
+  .map-canvas {
+    width:100%; height:100%;
+    position:relative; overflow:hidden;
+  }
+  svg.road-map { width:100%; height:100%; }
+
+  /* OVERLAY CONTROLS */
+  .map-controls {
+    position:absolute; top:16px; left:16px;
+    display:flex; flex-direction:column; gap:8px; z-index:10;
+  }
+  .map-btn {
+    padding:7px 14px; border-radius:8px; font-size:11px;
+    background:rgba(13,17,23,0.9); border:1px solid var(--bd);
+    color:var(--text); cursor:pointer; transition:all 0.2s;
+    font-family:'JetBrains Mono',monospace;
+    backdrop-filter:blur(8px);
+  }
+  .map-btn:hover,.map-btn.active { border-color:var(--a1); color:var(--a1); background:rgba(0,212,255,0.08); }
+
+  .map-legend {
+    position:absolute; bottom:16px; left:16px;
+    background:rgba(13,17,23,0.9); border:1px solid var(--bd);
+    border-radius:10px; padding:12px 14px;
+    backdrop-filter:blur(8px); z-index:10;
+  }
+  .legend-row { display:flex; align-items:center; gap:8px; margin-bottom:5px; font-size:11px; }
+  .legend-row:last-child { margin-bottom:0; }
+  .legend-line { width:20px; height:3px; border-radius:2px; }
+
+  /* CCTV THUMBNAILS */
+  .cctv-overlay {
+    position:absolute; top:16px; right:16px;
+    display:flex; flex-direction:column; gap:8px; z-index:10;
+  }
+  .cctv-thumb {
+    width:120px; height:72px; border-radius:8px;
+    background:var(--s2); border:1px solid var(--bd);
+    overflow:hidden; cursor:pointer; position:relative;
+    transition:transform 0.2s; backdrop-filter:blur(8px);
+  }
+  .cctv-thumb:hover { transform:scale(1.05); border-color:var(--a1); }
+  .cctv-inner { width:100%; height:100%; position:relative; display:flex; align-items:center; justify-content:center; }
+  .cctv-bg {
+    position:absolute; inset:0;
+    background:linear-gradient(135deg, #0d1a2a, #0a1520);
+  }
+  .cctv-label {
+    position:absolute; bottom:4px; left:6px;
+    font-size:9px; font-family:'JetBrains Mono',monospace;
+    background:rgba(0,0,0,0.7); padding:2px 5px; border-radius:3px;
+    color:var(--a1);
+  }
+  .cctv-vehicles {
+    position:relative; z-index:1;
+    display:flex; flex-wrap:wrap; gap:2px;
+    justify-content:center; padding:8px;
+  }
+  .v-dot { width:5px; height:5px; border-radius:1px; }
+  .v-car { background:var(--a1); }
+  .v-truck { background:var(--a4); width:8px; }
+  .v-stuck { background:var(--a5); }
+  .cctv-badge {
+    position:absolute; top:4px; right:4px; z-index:2;
+    background:rgba(239,35,60,0.8); color:#fff;
+    font-size:8px; font-family:'JetBrains Mono',monospace;
+    padding:1px 4px; border-radius:2px;
+  }
+  .cctv-rec {
+    position:absolute; top:4px; left:4px; z-index:2;
+    display:flex; align-items:center; gap:3px;
+    font-size:8px; color:var(--a5);
+    font-family:'JetBrains Mono',monospace;
+  }
+  .rec-dot { width:5px; height:5px; border-radius:50%; background:var(--a5); animation:alertPulse 1s infinite; }
+
+  /* RIGHT PANEL */
+  .right-panel {
+    background:var(--s1); border-left:1px solid var(--bd);
+    padding:20px 16px; display:flex; flex-direction:column; gap:20px;
+    position:relative; z-index:1; overflow-y:auto;
+  }
+
+  .predict-card {
+    background: linear-gradient(135deg, rgba(176,109,255,0.08), rgba(0,212,255,0.05));
+    border:1px solid rgba(176,109,255,0.25);
+    border-radius:12px; padding:16px;
+  }
+  .predict-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; }
+  .predict-title { font-weight:600; font-size:13px; }
+  .predict-badge {
+    font-size:9px; font-family:'JetBrains Mono',monospace;
+    padding:3px 8px; border-radius:4px;
+    background:rgba(176,109,255,0.2); color:var(--a6);
+    border:1px solid rgba(176,109,255,0.3);
+  }
+  .predict-row {
+    display:flex; align-items:center; gap:10px;
+    padding:8px 0; border-bottom:1px solid rgba(30,45,64,0.6);
+  }
+  .predict-row:last-child { border-bottom:none; }
+  .pred-time { font-family:'JetBrains Mono',monospace; font-size:11px; color:var(--muted); width:40px; flex-shrink:0; }
+  .pred-bar-wrap { flex:1; height:8px; background:var(--s3); border-radius:4px; position:relative; }
+  .pred-bar { height:100%; border-radius:4px; transition:width 1.5s ease; }
+  .pred-pct { font-family:'JetBrains Mono',monospace; font-size:11px; width:36px; text-align:right; flex-shrink:0; }
+
+  .fusion-status { display:flex; flex-direction:column; gap:6px; }
+  .fusion-row {
+    display:flex; align-items:center; justify-content:space-between;
+    padding:9px 12px; border-radius:8px;
+    background:var(--s2); border:1px solid var(--bd);
+    font-size:12px;
+  }
+  .fusion-source { display:flex; align-items:center; gap:8px; }
+  .src-icon { width:20px; height:20px; border-radius:5px; display:flex; align-items:center; justify-content:center; font-size:10px; }
+  .fusion-val { font-family:'JetBrains Mono',monospace; font-size:11px; }
+  .valid { color:var(--a3); } .warn { color:var(--a4); } .err { color:var(--a5); }
+
+  .stat-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .stat-box {
+    background:var(--s2); border:1px solid var(--bd);
+    border-radius:8px; padding:12px;
+    text-align:center;
+  }
+  .stat-val { font-family:'JetBrains Mono',monospace; font-size:22px; font-weight:600; margin-bottom:2px; }
+  .stat-lbl { font-size:10px; color:var(--muted); }
+
+  /* BOTTOM STRIP */
+  .bottom-strip {
+    position:absolute; bottom:0; left:0; right:0;
+    background:rgba(6,8,15,0.95); border-top:1px solid var(--bd);
+    padding:10px 20px; z-index:50;
+    display:flex; align-items:center; gap:20px;
+    backdrop-filter:blur(12px);
+  }
+  .strip-label { font-family:'JetBrains Mono',monospace; font-size:10px; color:var(--muted); text-transform:uppercase; letter-spacing:1px; }
+  .strip-chart { flex:1; height:40px; }
+
+  @keyframes fadeIn { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:translateY(0)} }
+  .corridor-item { animation:fadeIn 0.3s ease both; }
+  .corridor-item:nth-child(1){animation-delay:0.05s}
+  .corridor-item:nth-child(2){animation-delay:0.1s}
+  .corridor-item:nth-child(3){animation-delay:0.15s}
+  .corridor-item:nth-child(4){animation-delay:0.2s}
+  .corridor-item:nth-child(5){animation-delay:0.25s}
+  .corridor-item:nth-child(6){animation-delay:0.3s}
+
+  ::-webkit-scrollbar { width:4px; }
+  ::-webkit-scrollbar-track { background:transparent; }
+  ::-webkit-scrollbar-thumb { background:var(--bd); border-radius:4px; }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="brand">
+    <div class="brand-icon">🚦</div>
+    FlowSight <span style="font-weight:300;color:var(--muted);margin-left:4px">/ Hybrid Traffic Intelligence</span>
+  </div>
+  <div class="topbar-right">
+    <div class="alert-badge">⚠ STANDSTILL RISK: NH-48 KM 14.2 · 78% in 30 min</div>
+    <div class="sys-time" id="sys-time"></div>
+  </div>
+</div>
+
+<div class="app">
+  <!-- LEFT PANEL -->
+  <div class="left-panel">
+    <div>
+      <div class="panel-title">Traffic Corridors</div>
+      <div class="corridor-list">
+        <div class="corridor-item active" onclick="selectCorridor(this)">
+          <div>
+            <div class="corridor-name">NH-48 · KM 14–18</div>
+            <div class="corridor-sub">Outer Ring Road, Bengaluru</div>
+          </div>
+          <div class="level-dot l5"></div>
+        </div>
+        <div class="corridor-item" onclick="selectCorridor(this)">
+          <div>
+            <div class="corridor-name">ORR · Silk Board Jxn</div>
+            <div class="corridor-sub">Bengaluru South</div>
+          </div>
+          <div class="level-dot l4"></div>
+        </div>
+        <div class="corridor-item" onclick="selectCorridor(this)">
+          <div>
+            <div class="corridor-name">Expressway · NIBM Rd</div>
+            <div class="corridor-sub">Pune East Corridor</div>
+          </div>
+          <div class="level-dot l3"></div>
+        </div>
+        <div class="corridor-item" onclick="selectCorridor(this)">
+          <div>
+            <div class="corridor-name">Gachibowli Flyover</div>
+            <div class="corridor-sub">Hyderabad IT Corridor</div>
+          </div>
+          <div class="level-dot l3"></div>
+        </div>
+        <div class="corridor-item" onclick="selectCorridor(this)">
+          <div>
+            <div class="corridor-name">Hosur Road · Bommanahalli</div>
+            <div class="corridor-sub">Bengaluru South East</div>
+          </div>
+          <div class="level-dot l2"></div>
+        </div>
+        <div class="corridor-item" onclick="selectCorridor(this)">
+          <div>
+            <div class="corridor-name">Whitefield Main Road</div>
+            <div class="corridor-sub">Bengaluru East IT Hub</div>
+          </div>
+          <div class="level-dot l1"></div>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel-title">LSTM Model Status</div>
+      <div class="model-card">
+        <div class="model-row">
+          <span>Model</span>
+          <span class="model-val" style="color:var(--a6)">Bi-LSTM v2.3</span>
+        </div>
+        <div class="model-row">
+          <span>Accuracy</span>
+          <span class="model-val" style="color:var(--a3)">91.4%</span>
+        </div>
+        <div class="model-row">
+          <span>MAE</span>
+          <span class="model-val">±4.2 min</span>
+        </div>
+        <div class="model-row">
+          <span>Seq Length</span>
+          <span class="model-val">48 steps</span>
+        </div>
+        <div class="model-row">
+          <span>Features</span>
+          <span class="model-val">14 inputs</span>
+        </div>
+        <div class="panel-title" style="margin-top:12px;margin-bottom:6px">GPU Load</div>
+        <div class="mini-gauge"><div class="mini-fill" style="width:42%;background:var(--a1)"></div></div>
+        <div class="panel-title" style="margin-top:10px;margin-bottom:6px">YOLO Inference</div>
+        <div class="mini-gauge"><div class="mini-fill" style="width:78%;background:var(--a2)"></div></div>
+      </div>
+    </div>
+
+    <div>
+      <div class="panel-title">Vehicle Counts — YOLO</div>
+      <div class="model-card">
+        <div class="model-row"><span>Cars</span><span class="model-val" id="cnt-cars" style="color:var(--a1)">342</span></div>
+        <div class="model-row"><span>Heavy Vehicles</span><span class="model-val" id="cnt-hv" style="color:var(--a4)">67</span></div>
+        <div class="model-row"><span>Two-Wheelers</span><span class="model-val" id="cnt-2w" style="color:var(--a3)">189</span></div>
+        <div class="model-row"><span>Stalled</span><span class="model-val" id="cnt-stall" style="color:var(--a5)">8</span></div>
+        <div class="model-row"><span>Anomalies</span><span class="model-val" id="cnt-anom" style="color:var(--a6)">2</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CENTER MAP -->
+  <div class="center">
+    <div class="map-canvas" id="map-canvas">
+      <svg class="road-map" id="road-svg" viewBox="0 0 800 560" xmlns="http://www.w3.org/2000/svg">
+        <!-- Grid -->
+        <defs>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1a2130" stroke-width="0.5"/>
+          </pattern>
+          <filter id="blur-glow"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+        </defs>
+        <rect width="800" height="560" fill="#0a1018"/>
+        <rect width="800" height="560" fill="url(#grid)"/>
+
+        <!-- Background roads (grey) -->
+        <line x1="0" y1="200" x2="800" y2="200" stroke="#1e2d40" stroke-width="12" stroke-linecap="round"/>
+        <line x1="0" y1="360" x2="800" y2="360" stroke="#1e2d40" stroke-width="12" stroke-linecap="round"/>
+        <line x1="200" y1="0" x2="200" y2="560" stroke="#1e2d40" stroke-width="10"/>
+        <line x1="500" y1="0" x2="500" y2="560" stroke="#1e2d40" stroke-width="10"/>
+        <line x1="650" y1="0" x2="650" y2="560" stroke="#1e2d40" stroke-width="6"/>
+        <path d="M 0 500 Q 200 450 400 480 T 800 460" stroke="#1e2d40" stroke-width="8" fill="none"/>
+        <path d="M 100 0 Q 150 200 180 350 T 120 560" stroke="#1e2d40" stroke-width="6" fill="none"/>
+
+        <!-- NH-48 Main Road (animated congestion) -->
+        <line x1="0" y1="280" x2="800" y2="280" stroke="#2a3a50" stroke-width="22" stroke-linecap="round"/>
+        <!-- Sections with congestion colors -->
+        <line x1="0" y1="280" x2="200" y2="280" stroke="#7fff6a" stroke-width="16" stroke-linecap="round" opacity="0.8" id="seg1"/>
+        <line x1="200" y1="280" x2="380" y2="280" stroke="#ffd166" stroke-width="16" stroke-linecap="round" opacity="0.8" id="seg2"/>
+        <line x1="380" y1="280" x2="580" y2="280" stroke="#ff6b35" stroke-width="16" stroke-linecap="round" opacity="0.8" id="seg3"/>
+        <line x1="580" y1="280" x2="800" y2="280" stroke="#ef233c" stroke-width="16" stroke-linecap="round" opacity="0.9" id="seg4"/>
+
+        <!-- Road label -->
+        <rect x="10" y="255" width="60" height="16" rx="3" fill="rgba(0,0,0,0.5)"/>
+        <text x="40" y="267" fill="#dce8f5" font-size="9" font-family="JetBrains Mono" text-anchor="middle">NH-48</text>
+
+        <!-- CCTV Camera markers -->
+        <g id="cam1" style="cursor:pointer">
+          <circle cx="150" cy="280" r="10" fill="rgba(0,212,255,0.15)" stroke="#00d4ff" stroke-width="1.5"/>
+          <circle cx="150" cy="280" r="3" fill="#00d4ff"/>
+          <circle cx="150" cy="280" r="10" fill="none" stroke="#00d4ff" stroke-width="1" opacity="0.5">
+            <animate attributeName="r" values="10;20;10" dur="2s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.5;0;0.5" dur="2s" repeatCount="indefinite"/>
+          </circle>
+        </g>
+        <g id="cam2" style="cursor:pointer">
+          <circle cx="340" cy="280" r="10" fill="rgba(0,212,255,0.15)" stroke="#00d4ff" stroke-width="1.5"/>
+          <circle cx="340" cy="280" r="3" fill="#00d4ff"/>
+          <circle cx="340" cy="280" r="10" fill="none" stroke="#00d4ff" stroke-width="1" opacity="0.5">
+            <animate attributeName="r" values="10;20;10" dur="2.4s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.5;0;0.5" dur="2.4s" repeatCount="indefinite"/>
+          </circle>
+        </g>
+        <g id="cam3" style="cursor:pointer">
+          <circle cx="530" cy="280" r="10" fill="rgba(239,35,60,0.2)" stroke="#ef233c" stroke-width="1.5"/>
+          <circle cx="530" cy="280" r="3" fill="#ef233c"/>
+          <circle cx="530" cy="280" r="10" fill="none" stroke="#ef233c" stroke-width="1" opacity="0.5">
+            <animate attributeName="r" values="10;24;10" dur="1.5s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.5;0;0.5" dur="1.5s" repeatCount="indefinite"/>
+          </circle>
+        </g>
+        <g id="cam4">
+          <circle cx="700" cy="280" r="10" fill="rgba(239,35,60,0.3)" stroke="#ef233c" stroke-width="2"/>
+          <circle cx="700" cy="280" r="4" fill="#ef233c"/>
+          <circle cx="700" cy="280" r="10" fill="none" stroke="#ef233c" stroke-width="2" opacity="0.5">
+            <animate attributeName="r" values="10;28;10" dur="1.2s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0.7;0;0.7" dur="1.2s" repeatCount="indefinite"/>
+          </circle>
+        </g>
+
+        <!-- Predicted hotspot -->
+        <circle cx="680" cy="280" r="32" fill="rgba(176,109,255,0.1)" stroke="rgba(176,109,255,0.4)" stroke-width="1" stroke-dasharray="4 3">
+          <animateTransform attributeName="transform" type="rotate" values="0 680 280;360 680 280" dur="8s" repeatCount="indefinite"/>
+        </circle>
+        <rect x="645" y="255" width="70" height="14" rx="3" fill="rgba(176,109,255,0.8)"/>
+        <text x="680" y="265" fill="#fff" font-size="8" font-family="JetBrains Mono" text-anchor="middle">PREDICTED JAM</text>
+
+        <!-- Moving car dots on free section -->
+        <circle r="4" fill="#00d4ff" opacity="0.8">
+          <animateMotion dur="3s" repeatCount="indefinite" path="M 0 280 L 190 280"/>
+          <animate attributeName="opacity" values="0.8;0.8;0" keyTimes="0;0.8;1" dur="3s" repeatCount="indefinite"/>
+        </circle>
+        <circle r="3" fill="#7fff6a" opacity="0.7">
+          <animateMotion dur="3.8s" repeatCount="indefinite" path="M 0 276 L 190 276"/>
+          <animate attributeName="opacity" values="0.7;0.7;0" keyTimes="0;0.8;1" dur="3.8s" repeatCount="indefinite"/>
+        </circle>
+        <!-- Slow cars on congested section -->
+        <circle r="4" fill="#ff6b35" opacity="0.9">
+          <animateMotion dur="8s" repeatCount="indefinite" path="M 380 280 L 578 280"/>
+        </circle>
+        <circle r="3" fill="#ffd166" opacity="0.8">
+          <animateMotion dur="10s" repeatCount="indefinite" path="M 200 280 L 378 280"/>
+        </circle>
+        <!-- Stalled car -->
+        <rect x="608" y="273" width="12" height="8" rx="2" fill="#ef233c" opacity="0.9">
+          <animate attributeName="opacity" values="0.9;0.5;0.9" dur="1.5s" repeatCount="indefinite"/>
+        </rect>
+
+        <!-- Intersection markers -->
+        <circle cx="200" cy="280" r="6" fill="#1a2130" stroke="#1e2d40" stroke-width="2"/>
+        <circle cx="500" cy="280" r="6" fill="#1a2130" stroke="#1e2d40" stroke-width="2"/>
+
+        <!-- KM markers -->
+        <text x="50" y="270" fill="#5a7a96" font-size="8" font-family="JetBrains Mono">KM 10</text>
+        <text x="245" y="270" fill="#5a7a96" font-size="8" font-family="JetBrains Mono">KM 14</text>
+        <text x="445" y="270" fill="#5a7a96" font-size="8" font-family="JetBrains Mono">KM 18</text>
+        <text x="640" y="270" fill="#5a7a96" font-size="8" font-family="JetBrains Mono">KM 22</text>
+
+        <!-- Speed overlays -->
+        <text x="80" y="298" fill="#7fff6a" font-size="9" font-family="JetBrains Mono" opacity="0.9">72 km/h</text>
+        <text x="265" y="298" fill="#ffd166" font-size="9" font-family="JetBrains Mono" opacity="0.9">38 km/h</text>
+        <text x="450" y="298" fill="#ff6b35" font-size="9" font-family="JetBrains Mono" opacity="0.9">14 km/h</text>
+        <text x="618" y="298" fill="#ef233c" font-size="9" font-family="JetBrains Mono" opacity="0.9">4 km/h</text>
+      </svg>
+
+      <!-- MAP CONTROLS -->
+      <div class="map-controls">
+        <button class="map-btn active" onclick="toggleLayer(this)">🛣 Road Layer</button>
+        <button class="map-btn" onclick="toggleLayer(this)">📡 CCTV Feeds</button>
+        <button class="map-btn active" onclick="toggleLayer(this)">🔮 Predictions</button>
+        <button class="map-btn" onclick="toggleLayer(this)">🗺 Satellite</button>
+      </div>
+
+      <!-- CCTV THUMBNAILS -->
+      <div class="cctv-overlay">
+        <div class="cctv-thumb" title="Camera CAM-NH48-003 · KM 18.2">
+          <div class="cctv-inner">
+            <div class="cctv-bg" style="background:linear-gradient(135deg,#100a08,#1a0f0a)"></div>
+            <div class="cctv-vehicles" id="cctv-v1"></div>
+            <div class="cctv-rec"><div class="rec-dot"></div>REC</div>
+            <div class="cctv-badge">CRIT</div>
+            <div class="cctv-label">CAM-NH48-003 · KM 18.2</div>
+          </div>
+        </div>
+        <div class="cctv-thumb" title="Camera CAM-ORR-012 · Silk Board">
+          <div class="cctv-inner">
+            <div class="cctv-bg" style="background:linear-gradient(135deg,#0a0e18,#0d1420)"></div>
+            <div class="cctv-vehicles" id="cctv-v2"></div>
+            <div class="cctv-rec"><div class="rec-dot"></div>REC</div>
+            <div class="cctv-badge" style="background:rgba(255,107,53,0.8)">HIGH</div>
+            <div class="cctv-label">CAM-ORR-012 · Silk Board</div>
+          </div>
+        </div>
+        <div class="cctv-thumb" title="Camera CAM-WF-007 · Whitefield">
+          <div class="cctv-inner">
+            <div class="cctv-bg"></div>
+            <div class="cctv-vehicles" id="cctv-v3"></div>
+            <div class="cctv-rec"><div class="rec-dot" style="background:var(--a3)"></div>REC</div>
+            <div class="cctv-badge" style="background:rgba(127,255,106,0.7);color:#000">LOW</div>
+            <div class="cctv-label">CAM-WF-007 · Whitefield</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- LEGEND -->
+      <div class="map-legend">
+        <div class="legend-row"><div class="legend-line" style="background:#7fff6a"></div><span style="font-size:10px;font-family:'JetBrains Mono',monospace">Free Flow (>60)</span></div>
+        <div class="legend-row"><div class="legend-line" style="background:#ffd166"></div><span style="font-size:10px;font-family:'JetBrains Mono',monospace">Moderate (30–60)</span></div>
+        <div class="legend-row"><div class="legend-line" style="background:#ff6b35"></div><span style="font-size:10px;font-family:'JetBrains Mono',monospace">Congested (<30)</span></div>
+        <div class="legend-row"><div class="legend-line" style="background:#ef233c"></div><span style="font-size:10px;font-family:'JetBrains Mono',monospace">Standstill (<10)</span></div>
+        <div class="legend-row"><div class="legend-line" style="background:#b06dff;border-top:2px dashed #b06dff;height:0"></div><span style="font-size:10px;font-family:'JetBrains Mono',monospace">Predicted Zone</span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT PANEL -->
+  <div class="right-panel">
+    <!-- Stats -->
+    <div>
+      <div class="panel-title">Live Metrics</div>
+      <div class="stat-grid">
+        <div class="stat-box">
+          <div class="stat-val" style="color:var(--a5)" id="live-speed">6</div>
+          <div class="stat-lbl">Avg Speed (km/h)</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" style="color:var(--a2)" id="live-density">94</div>
+          <div class="stat-lbl">Density (%)</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" style="color:var(--a4)" id="live-inflow">847</div>
+          <div class="stat-lbl">Inflow/hr</div>
+        </div>
+        <div class="stat-box">
+          <div class="stat-val" style="color:var(--a1)" id="live-outflow">412</div>
+          <div class="stat-lbl">Outflow/hr</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Prediction -->
+    <div class="predict-card">
+      <div class="predict-header">
+        <span class="predict-title">Standstill Probability Forecast</span>
+        <span class="predict-badge">LSTM OUTPUT</span>
+      </div>
+      <div class="predict-row">
+        <span class="pred-time">+15m</span>
+        <div class="pred-bar-wrap"><div class="pred-bar" id="p15" style="width:62%;background:var(--a2)"></div></div>
+        <span class="pred-pct" style="color:var(--a2)">62%</span>
+      </div>
+      <div class="predict-row">
+        <span class="pred-time">+30m</span>
+        <div class="pred-bar-wrap"><div class="pred-bar" id="p30" style="width:78%;background:var(--a5)"></div></div>
+        <span class="pred-pct" style="color:var(--a5)">78%</span>
+      </div>
+      <div class="predict-row">
+        <span class="pred-time">+45m</span>
+        <div class="pred-bar-wrap"><div class="pred-bar" id="p45" style="width:84%;background:var(--a5)"></div></div>
+        <span class="pred-pct" style="color:var(--a5)">84%</span>
+      </div>
+      <div class="predict-row">
+        <span class="pred-time">+60m</span>
+        <div class="pred-bar-wrap"><div class="pred-bar" id="p60" style="width:71%;background:var(--a2)"></div></div>
+        <span class="pred-pct" style="color:var(--a2)">71%</span>
+      </div>
+    </div>
+
+    <!-- Fusion Status -->
+    <div>
+      <div class="panel-title">Cross-Modal Fusion</div>
+      <div class="fusion-status">
+        <div class="fusion-row">
+          <div class="fusion-source">
+            <div class="src-icon" style="background:rgba(0,212,255,0.15)">📡</div>
+            <div>
+              <div style="font-size:12px;font-weight:500">CCTV Visual</div>
+              <div style="font-size:10px;color:var(--muted)">3 cameras active</div>
+            </div>
+          </div>
+          <span class="fusion-val valid">● SYNCED</span>
+        </div>
+        <div class="fusion-row">
+          <div class="fusion-source">
+            <div class="src-icon" style="background:rgba(255,209,102,0.15)">🗺</div>
+            <div>
+              <div style="font-size:12px;font-weight:500">Maps API</div>
+              <div style="font-size:10px;color:var(--muted)">Route Matrix v2</div>
+            </div>
+          </div>
+          <span class="fusion-val warn">● 3s LAG</span>
+        </div>
+        <div class="fusion-row">
+          <div class="fusion-source">
+            <div class="src-icon" style="background:rgba(176,109,255,0.15)">🧠</div>
+            <div>
+              <div style="font-size:12px;font-weight:500">LSTM Engine</div>
+              <div style="font-size:10px;color:var(--muted)">48-step window</div>
+            </div>
+          </div>
+          <span class="fusion-val valid">● ACTIVE</span>
+        </div>
+        <div class="fusion-row">
+          <div class="fusion-source">
+            <div class="src-icon" style="background:rgba(127,255,106,0.1)">👁</div>
+            <div>
+              <div style="font-size:12px;font-weight:500">YOLOv8</div>
+              <div style="font-size:10px;color:var(--muted)">Real-time detect</div>
+            </div>
+          </div>
+          <span class="fusion-val valid">● 28fps</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Mini Flow Chart -->
+    <div>
+      <div class="panel-title">Inflow vs Outflow — Last 2hrs</div>
+      <canvas id="flowChart" height="140"></canvas>
+    </div>
+  </div>
+</div>
+
+<script>
+// TIME
+function updateTime() {
+  document.getElementById('sys-time').textContent = new Date().toLocaleTimeString('en-IN',{hour12:false});
+}
+setInterval(updateTime, 1000); updateTime();
+
+// CCTV SIMULATION
+function renderCCTV(id, count, stalled, trucks) {
+  const el = document.getElementById(id);
+  if(!el) return;
+  el.innerHTML = '';
+  for(let i=0;i<count;i++) {
+    const d = document.createElement('div');
+    const isStall = i < stalled;
+    const isTruck = !isStall && i < stalled + trucks;
+    d.className = 'v-dot ' + (isStall ? 'v-stuck' : isTruck ? 'v-truck' : 'v-car');
+    el.appendChild(d);
+  }
+}
+renderCCTV('cctv-v1', 36, 8, 5);
+renderCCTV('cctv-v2', 24, 3, 4);
+renderCCTV('cctv-v3', 12, 0, 2);
+
+// LIVE METRICS TICK
+function tickMetrics() {
+  const speed = 4 + Math.floor(Math.random()*6);
+  const density = 88 + Math.floor(Math.random()*10);
+  const inflow = 820 + Math.floor(Math.random()*60);
+  const outflow = 390 + Math.floor(Math.random()*50);
+  document.getElementById('live-speed').textContent = speed;
+  document.getElementById('live-density').textContent = density;
+  document.getElementById('live-inflow').textContent = inflow;
+  document.getElementById('live-outflow').textContent = outflow;
+
+  // vehicle counts
+  document.getElementById('cnt-cars').textContent = 320 + Math.floor(Math.random()*40);
+  document.getElementById('cnt-hv').textContent = 60 + Math.floor(Math.random()*15);
+  document.getElementById('cnt-2w').textContent = 170 + Math.floor(Math.random()*30);
+  document.getElementById('cnt-stall').textContent = 6 + Math.floor(Math.random()*5);
+  document.getElementById('cnt-anom').textContent = 1 + Math.floor(Math.random()*3);
+
+  // prediction bars update slightly
+  const p15 = 58 + Math.floor(Math.random()*10);
+  const p30 = 74 + Math.floor(Math.random()*10);
+  document.getElementById('p15').style.width = p15 + '%';
+  document.getElementById('p30').style.width = p30 + '%';
+  document.getElementById('p15').closest('.predict-row').querySelector('.pred-pct').textContent = p15 + '%';
+  document.getElementById('p30').closest('.predict-row').querySelector('.pred-pct').textContent = p30 + '%';
+}
+setInterval(tickMetrics, 2500);
+
+// FLOW CHART
+Chart.defaults.color = '#5a7a96';
+Chart.defaults.font = { family: "'JetBrains Mono', monospace", size: 10 };
+
+new Chart(document.getElementById('flowChart'), {
+  type: 'line',
+  data: {
+    labels: ['07:00','07:15','07:30','07:45','08:00','08:15','08:30','08:45','09:00'],
+    datasets: [
+      { label:'Inflow', data:[420,560,680,790,870,900,880,850,840], borderColor:'#ff6b35', tension:0.4, fill:false, borderWidth:2, pointRadius:2 },
+      { label:'Outflow', data:[410,540,620,680,720,740,690,560,410], borderColor:'#00d4ff', tension:0.4, fill:false, borderWidth:2, pointRadius:2 },
+    ]
+  },
+  options: {
+    responsive: true,
+    plugins: { legend: { labels: { boxWidth:8 } } },
+    scales: {
+      x: { grid: { color:'rgba(30,45,64,0.8)' } },
+      y: { grid: { color:'rgba(30,45,64,0.8)' } }
+    }
+  }
+});
+
+// INTERACTIONS
+function selectCorridor(el) {
+  document.querySelectorAll('.corridor-item').forEach(c=>c.classList.remove('active'));
+  el.classList.add('active');
+}
+function toggleLayer(btn) { btn.classList.toggle('active'); }
+</script>
+</body>
+</html>
